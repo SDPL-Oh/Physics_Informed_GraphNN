@@ -66,10 +66,6 @@ class LearnedSimulator(snt.Module):
         distance_to_upper_boundary = (tf.expand_dims(boundaries[:, 1], 0) - most_recent_position)
         distance_to_boundaries = tf.concat([distance_to_lower_boundary, distance_to_upper_boundary], axis=1)
 
-        print(distance_to_lower_boundary)
-        print(distance_to_upper_boundary)
-        print(distance_to_boundaries)
-
         normalized_clipped_distance_to_boundaries = tf.clip_by_value(
             distance_to_boundaries / self._connectivity_radius, -1., 1.
         )
