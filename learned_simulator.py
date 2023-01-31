@@ -14,6 +14,7 @@ class LearnedSimulator(snt.Module):
             num_dimensions,
             connectivity_radius,
             boundaries,
+            num_boundaries,
             num_particle_types,
             num_processing_steps,
             particle_type_embedding_size,
@@ -25,6 +26,7 @@ class LearnedSimulator(snt.Module):
         self._num_particle_types = num_particle_types
         self._num_processing_steps = num_processing_steps
         self._boundaries = boundaries
+        self.num_boundaries = num_boundaries
         self.graph_networks = graph_network.GraphEPD(node_output_size=num_dimensions)
 
         if self._num_particle_types > 1:
@@ -43,7 +45,7 @@ class LearnedSimulator(snt.Module):
     ):
 
         input_graphs_tuple = self._encoder_preprocessor(
-            position_sequence, n_particles_per_example, n_boundary_per_example, particle_types
+            position_sequence, n_particles_per_example, particle_types
         )
         normalized_velocity = self.graph_networks(input_graphs_tuple, self._num_processing_steps)
         next_position = self._decoder_postprocessor(normalized_velocity[-1].nodes, position_sequence)
@@ -53,17 +55,26 @@ class LearnedSimulator(snt.Module):
             self,
             position_sequence,
             n_node,
-            n_boundary,
             particle_types
     ):
 
         most_recent_position = position_sequence[:, -1]
         velocity_sequence = time_diff(position_sequence)
 
+        const_bound = tf.constant(self._boundaries, dtype=tf.float32)
+        boundaries = []
+        for idx in range(const_bound.get_shape().as_list()[0]):
+            boundaries.append(
+                tf.concat(
+                    [tf.linspace(const_bound[idx, 0], const_bound[idx, 0], self.num_boundaries)[:, tf.newaxis],
+                     tf.linspace(const_bound[idx, 1], const_bound[idx, 1], self.num_boundaries)[:, tf.newaxis],
+                     tf.linspace(const_bound[idx, 0], const_bound[idx, 1], self.num_boundaries)[:, tf.newaxis]
+                     ], axis=-1
+                )
+            )
 
-        boundaries = tf.constant(self._boundaries, dtype=tf.float32)
-        distance_to_lower_boundary = (most_recent_position - tf.expand_dims(boundaries[:, 0], 0))
-        distance_to_upper_boundary = (tf.expand_dims(boundaries[:, 1], 0) - most_recent_position)
+        print(boundaries)
+        raise ValueError
         distance_to_boundaries = tf.concat([distance_to_lower_boundary, distance_to_upper_boundary], axis=1)
 
         normalized_clipped_distance_to_boundaries = tf.clip_by_value(
@@ -137,12 +148,9 @@ class LearnedSimulator(snt.Module):
 
         noisy_position_sequence = position_sequence + position_sequence_noise
 
-        n_boundary = 1
-
         input_graphs_tuple = self._encoder_preprocessor(
             noisy_position_sequence,
             n_particles_per_example,
-            n_boundary,
             particle_types
         )
         predicted_velocity = self.graph_networks(input_graphs_tuple, self._num_processing_steps)

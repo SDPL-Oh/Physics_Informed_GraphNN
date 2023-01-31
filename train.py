@@ -163,6 +163,7 @@ class LearningSimulator:
             num_dimensions=self.metadata['dim'],
             connectivity_radius=self.metadata['default_connectivity_radius'],
             boundaries=self.metadata['bounds'],
+            num_boundaries=100,
             num_particle_types=NUM_PARTICLE_TYPES,
             num_processing_steps=NUM_PROCESSING_STEPS,
             particle_type_embedding_size=16)

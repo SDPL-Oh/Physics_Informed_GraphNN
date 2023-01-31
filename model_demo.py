@@ -2,8 +2,8 @@ import collections
 import numpy as np
 import tensorflow as tf
 
-from graph_simulator.utils import noise_utils
-from graph_simulator.utils import learned_simulator
+import noise_utils
+import learned_simulator
 
 """
 Particle type: 다양한 재료의 특성을 반영할 수 있도록 class 로 설정함.
