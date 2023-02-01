@@ -6,6 +6,15 @@ import connectivity_utils
 import graph_network
 
 
+def _decoder_postprocessor(
+        velocity,
+        position_sequence):
+
+    most_recent_position = position_sequence[:, -1]
+    new_position = most_recent_position + velocity  # * dt = 1
+    return new_position
+
+
 class LearnedSimulator(snt.Module):
     def __init__(
             self,
@@ -34,22 +43,22 @@ class LearnedSimulator(snt.Module):
                 name="particle_embedding"
             )
 
-    def get_predicted(
-            self,
-            position_sequence,
-            n_particles_per_example,
-            particle_types=None
-    ):
-
-        input_graphs_tuple = self._encoder_preprocessor(
-            position_sequence,
-            n_particles_per_example,
-            particle_types
-        )
-
-        predicted_velocity = self.graph_networks(input_graphs_tuple, self._num_processing_steps)
-        next_position = self._decoder_postprocessor(normalized_velocity[-1].nodes, position_sequence)
-        return next_position
+    # def get_predicted(
+    #         self,
+    #         position_sequence,
+    #         n_particles_per_example,
+    #         particle_types=None
+    # ):
+    #
+    #     input_graphs_tuple = self._encoder_preprocessor(
+    #         position_sequence,
+    #         n_particles_per_example,
+    #         particle_types
+    #     )
+    #
+    #     predicted_velocity = self.graph_networks(input_graphs_tuple, self._num_processing_steps)
+    #     next_position = _decoder_postprocessor(normalized_velocity[-1].nodes, position_sequence)
+    #     return next_position
 
     def _encoder_preprocessor(
             self,
@@ -100,16 +109,7 @@ class LearnedSimulator(snt.Module):
             receivers=receivers,
         )
 
-    def _decoder_postprocessor(
-            self,
-            velocity,
-            position_sequence):
-
-        most_recent_position = position_sequence[:, -1]
-        new_position = most_recent_position + velocity  # * dt = 1
-        return new_position
-
-    def get_predicted_and_target_velocity(
+    def get_predicted_velocity(
             self,
             position_sequence,
             n_particles_per_example,
@@ -121,9 +121,8 @@ class LearnedSimulator(snt.Module):
             n_particles_per_example,
             particle_types
         )
-        predicted_velocity = self.graph_networks(input_graphs_tuple, self._num_processing_steps)
 
-        return predicted_velocity
+        return self.graph_networks(input_graphs_tuple, self._num_processing_steps)
 
     def _inverse_decoder_postprocessor(
             self,

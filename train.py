@@ -67,7 +67,7 @@ Stats = collections.namedtuple('Stats', ['mean', 'std'])
 INPUT_SEQUENCE_LENGTH = 2  # So we can calculate the last 5 velocities.
 NUM_PARTICLE_TYPES = 9
 KINEMATIC_PARTICLE_ID = 3
-NUM_PROCESSING_STEPS = 2
+NUM_PROCESSING_STEPS = 1
 Re = 100
 
 
@@ -301,23 +301,21 @@ class LearningSimulator:
         return rollout_op
 
     @tf.function
-    def test_step(self, features, labels):
+    def ns_net(self, features):
         x = features['position'][:, :1, 0:1]
         y = features['position'][:, :1, 1:2]
         t = features['position'][:, :1, -1:]
 
         pos = tf.concat([x, y, t], axis=2)
-        target = labels[:, tf.newaxis, :]
-        target_velocity = target - pos
 
-        predicted_velocity = self.simulator.get_predicted_and_target_velocity(
+        predicted_velocity = self.simulator.get_predicted_velocity(
             position_sequence=pos,
             n_particles_per_example=features['n_particles_per_example'],
             particle_types=features['particle_type'][:tf.shape(features['position'])[0]]
         )
 
-        phi = predicted_velocity[-1].nodes[:, 0]
-        p = predicted_velocity[-1].nodes[:, 1]
+        phi = predicted_velocity[-1].nodes[:, 0:1][:, tf.newaxis, :]
+        p = predicted_velocity[-1].nodes[:, 1:2][:, tf.newaxis, :]
         g = tf.Graph()
         with g.as_default():
             u = tf.gradients(phi, y)[0]
@@ -341,14 +339,19 @@ class LearningSimulator:
         f = u_t + u * u_x + v * u_y + p_x - 1 / Re * (u_xx + u_yy)
         g = v_t + u * v_x + v * v_y + p_y - 1 / Re * (v_xx + v_yy)
 
-        ## todo: 정답을 제공해야 함, 속도는 나오지만 압력은 나오지 않는다.
-        ### ValueError: No gradients provided for any variable error 발생
+        return u, v, p, f, g
+
+    @tf.function
+    def test_step(self, features, labels):
+        target = labels[:, tf.newaxis, :]
+        target_velocity = target - features['position'][:, :1, :]
+
         with tf.GradientTape() as tape:
-            loss_b = tf.keras.losses.MSE(u, target_velocity[:, 0, 0:1]) + \
-                     tf.keras.losses.MSE(v, target_velocity[:, 0, 1:2]) \
-                     # + tf.keras.losses.MSE(p, p_train)
+            u, v, p, f, g = self.ns_net(features)
+            loss_b = tf.keras.losses.MSE(target_velocity[:, :, :-1], tf.concat([u, v], axis=-1))
+            loss_b = tf.reshape(loss_b, [-1])
             loss_c = tf.reshape(f ** 2 + g ** 2, [-1])
-            loss = loss_b + loss_c
+            loss = tf.reduce_mean(loss_b + loss_c)
 
         gradients = tape.gradient(loss, self.simulator.graph_networks.trainable_variables)
         self.opt.apply_gradients(zip(gradients, self.simulator.graph_networks.trainable_variables))
@@ -384,7 +387,8 @@ class LearningSimulator:
         for epoch in range(FLAGS.num_steps):
             print("\nStart of epoch %d" % epoch)
             for step, (features, labels) in enumerate(ds):
-                self.test_step(features, labels)
+                loss_c, loss_b, loss = self.test_step(features, labels)
+                print(loss)
 
 
 def main(_):
