@@ -58,7 +58,7 @@ class LearnedSimulator(snt.Module):
             particle_types
     ):
 
-        most_recent_position = position_sequence[:, -1]
+        most_recent_position = position_sequence[:, 0]
         input_position = position_sequence[:, :1]
         boundary_sequence, n_bound = self._boundary_sequence(input_position[0, 0, -1])
         position_boundary = tf.concat([input_position, boundary_sequence], axis=0)
@@ -122,9 +122,8 @@ class LearnedSimulator(snt.Module):
             particle_types
         )
         predicted_velocity = self.graph_networks(input_graphs_tuple, self._num_processing_steps)
-        target_velocity = time_diff(position_sequence)
 
-        return predicted_velocity, target_velocity
+        return predicted_velocity
 
     def _inverse_decoder_postprocessor(
             self,

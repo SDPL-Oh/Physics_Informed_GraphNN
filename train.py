@@ -160,7 +160,7 @@ class LearningSimulator:
 
     def get_simulator(self):
         simulator = learned_simulator.LearnedSimulator(
-            num_dimensions=3,
+            num_dimensions=2,
             connectivity_radius=self.metadata['default_connectivity_radius'],
             boundaries=self.metadata['bounds'],
             num_boundaries=100,
@@ -219,56 +219,6 @@ class LearningSimulator:
             output_dict['global_context'] = global_context
 
         return output_dict
-
-    def second_ns_net(self, features, labels, t):
-        target_next_position = labels
-
-        sampled_noise = noise_utils.get_random_walk_noise_for_position_sequence(
-            features['position'], noise_std_last_step=self.acc_noise_std)
-
-        non_kinematic_mask = tf.logical_not(
-            get_kinematic_mask(features['particle_type'][:tf.shape(sampled_noise)[0]]))
-        noise_mask = tf.cast(
-            non_kinematic_mask, sampled_noise.dtype)[:, tf.newaxis, tf.newaxis]
-        sampled_noise *= noise_mask
-
-        pred_target = self.simulator.get_predicted_and_target_velocity(
-            position_sequence=features['position'],
-            position_sequence_noise=sampled_noise,
-            n_particles_per_example=features['n_particles_per_example'],
-            particle_types=features['particle_type'][:tf.shape(sampled_noise)[0]],
-            time_sequence=features['time']
-        )
-
-        pred_velocity, target_velocity = pred_target
-
-        out = self.model(inputs)
-        phi = out[:, 0]
-        p = out[:, 1]
-        g = tf.Graph()
-        with g.as_default():
-            u = tf.gradients(phi, y)[0]
-            v = - tf.gradients(phi, x)[0]
-
-            u_t = tf.gradients(u, t)[0]
-            u_x = tf.gradients(u, x)[0]
-            u_y = tf.gradients(u, y)[0]
-            u_xx = tf.gradients(u_x, x)[0]
-            u_yy = tf.gradients(u_y, y)[0]
-
-            v_t = tf.gradients(v, t)[0]
-            v_x = tf.gradients(v, x)[0]
-            v_y = tf.gradients(v, y)[0]
-            v_xx = tf.gradients(v_x, x)[0]
-            v_yy = tf.gradients(v_y, y)[0]
-
-            p_x = tf.gradients(p, x)[0]
-            p_y = tf.gradients(p, y)[0]
-
-        f = u_t + u * u_x + v * u_y + p_x - 1 / Re * (u_xx + u_yy)
-        g = v_t + u * v_x + v * v_y + p_y - 1 / Re * (v_xx + v_yy)
-
-        return u, v, p, f, g
 
     @tf.function
     def train_step(self, features, labels):
@@ -352,27 +302,26 @@ class LearningSimulator:
 
     @tf.function
     def test_step(self, features, labels):
-        # sampled_noise = features['position']
-        #
-        # non_kinematic_mask = tf.logical_not(
-        #     get_kinematic_mask(features['particle_type'][:tf.shape(sampled_noise)[0]]))
-        # noise_mask = tf.cast(
-        #     non_kinematic_mask, sampled_noise.dtype)[:, tf.newaxis, tf.newaxis]
-        # sampled_noise *= noise_mask
+        x = features['position'][:, :1, 0:1]
+        y = features['position'][:, :1, 1:2]
+        t = features['position'][:, :1, -1:]
 
-        predicted_velocity, target_velocity = self.simulator.get_predicted_and_target_velocity(
-            position_sequence=features['position'],
+        pos = tf.concat([x, y, t], axis=2)
+        target = labels[:, tf.newaxis, :]
+        target_velocity = target - pos
+
+        predicted_velocity = self.simulator.get_predicted_and_target_velocity(
+            position_sequence=pos,
             n_particles_per_example=features['n_particles_per_example'],
             particle_types=features['particle_type'][:tf.shape(features['position'])[0]]
         )
 
-        print(predicted_velocity[-1].nodes)
-        # phi = predicted_velocity[:, 0]
-        p = predicted_velocity[-1].nodes[:, 2]
+        phi = predicted_velocity[-1].nodes[:, 0]
+        p = predicted_velocity[-1].nodes[:, 1]
         g = tf.Graph()
         with g.as_default():
             u = tf.gradients(phi, y)[0]
-            v = - tf.gradients(phi, x)[0]
+            v = -1 * tf.gradients(phi, x)[0]
 
             u_t = tf.gradients(u, t)[0]
             u_x = tf.gradients(u, x)[0]
@@ -391,6 +340,20 @@ class LearningSimulator:
 
         f = u_t + u * u_x + v * u_y + p_x - 1 / Re * (u_xx + u_yy)
         g = v_t + u * v_x + v * v_y + p_y - 1 / Re * (v_xx + v_yy)
+
+        ## todo: 정답을 제공해야 함, 속도는 나오지만 압력은 나오지 않는다.
+        ### ValueError: No gradients provided for any variable error 발생
+        with tf.GradientTape() as tape:
+            loss_b = tf.keras.losses.MSE(u, target_velocity[:, 0, 0:1]) + \
+                     tf.keras.losses.MSE(v, target_velocity[:, 0, 1:2]) \
+                     # + tf.keras.losses.MSE(p, p_train)
+            loss_c = tf.reshape(f ** 2 + g ** 2, [-1])
+            loss = loss_b + loss_c
+
+        gradients = tape.gradient(loss, self.simulator.graph_networks.trainable_variables)
+        self.opt.apply_gradients(zip(gradients, self.simulator.graph_networks.trainable_variables))
+
+        return loss_c, loss_b, loss
 
     def validation(self):
         checkpoint = tf.train.Checkpoint(step=tf.Variable(1), module=[self.simulator])
