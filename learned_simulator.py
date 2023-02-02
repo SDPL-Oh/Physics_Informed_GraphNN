@@ -73,8 +73,10 @@ class LearnedSimulator(snt.Module):
         position_boundary = tf.concat([input_position, boundary_sequence], axis=0)
         n_nodes = n_node + n_bound
 
+        recent_position_boundary = position_boundary[:, -1]
+
         (senders, receivers, n_edge) = connectivity_utils.compute_connectivity_for_batch_pyfunc(
-            position_boundary, n_nodes, self._connectivity_radius
+            recent_position_boundary, n_nodes, self._connectivity_radius
         )
 
         node_features = []

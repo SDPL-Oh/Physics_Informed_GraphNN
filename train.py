@@ -348,15 +348,16 @@ class LearningSimulator:
 
         with tf.GradientTape() as tape:
             u, v, p, f, g = self.ns_net(features)
-            loss_b = tf.keras.losses.MSE(target_velocity[:, :, :-1], tf.concat([u, v], axis=-1))
-            loss_b = tf.reshape(loss_b, [-1])
-            loss_c = tf.reshape(f ** 2 + g ** 2, [-1])
-            loss = tf.reduce_mean(loss_b + loss_c)
+            loss_u = tf.keras.losses.MSE(target_velocity[:, :, 0:1], u)
+            loss_v = tf.keras.losses.MSE(target_velocity[:, :, 1:2], v)
+            loss_b = tf.reshape(loss_u + loss_v, [-1])
+            # loss_c = tf.reshape(f ** 2 + g ** 2, [-1])
+            loss = tf.reduce_mean(loss_b)
 
         gradients = tape.gradient(loss, self.simulator.graph_networks.trainable_variables)
         self.opt.apply_gradients(zip(gradients, self.simulator.graph_networks.trainable_variables))
 
-        return loss_c, loss_b, loss
+        return loss_b, loss
 
     def validation(self):
         checkpoint = tf.train.Checkpoint(step=tf.Variable(1), module=[self.simulator])
@@ -387,7 +388,7 @@ class LearningSimulator:
         for epoch in range(FLAGS.num_steps):
             print("\nStart of epoch %d" % epoch)
             for step, (features, labels) in enumerate(ds):
-                loss_c, loss_b, loss = self.test_step(features, labels)
+                loss_b, loss = self.test_step(features, labels)
                 print(loss)
 
 

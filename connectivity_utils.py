@@ -5,9 +5,6 @@ from sklearn import neighbors
 
 
 def _compute_connectivity(positions, radius, add_self_edges):
-    print(positions)
-    # TODO: ValueError: Found array with dim 3. None expected <= 2. 문제 발생
-    # KDTree 는 2D 만 받는다. 확인 후 변경해서 제공할 것
     tree = neighbors.KDTree(positions)
     receivers_list = tree.query_radius(positions, r=radius)
     num_nodes = len(positions)
