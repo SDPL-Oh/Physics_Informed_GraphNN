@@ -1,6 +1,8 @@
 import graph_nets as gn
 import sonnet as snt
 import tensorflow as tf
+import numpy as np
+from sklearn import neighbors
 
 import connectivity_utils
 import graph_network
@@ -63,6 +65,53 @@ def decoder_postprocessor(velocity, position_sequence):
     return new_position
 
 
+def compute_connectivity(positions, radius, add_self_edges):
+    tree = neighbors.KDTree(positions)
+    receivers_list = tree.query_radius(positions, r=radius)
+    num_nodes = len(positions)
+    senders = np.repeat(range(num_nodes), [len(a) for a in receivers_list])
+    receivers = np.concatenate(receivers_list, axis=0)
+
+    if not add_self_edges:
+        mask = senders != receivers
+        senders = senders[mask]
+        receivers = receivers[mask]
+
+    return senders, receivers
+
+
+def compute_connectivity_for_batch(positions, n_node, radius, add_self_edges):
+    positions_per_graph_list = np.split(positions, np.cumsum(n_node[:-1]), axis=0)
+    receivers_list = []
+    senders_list = []
+    n_edge_list = []
+    num_nodes_in_previous_graphs = 0
+
+    for positions_graph_i in positions_per_graph_list:
+        senders_graph_i, receivers_graph_i = compute_connectivity(
+            positions_graph_i, radius, add_self_edges)
+
+        num_edges_graph_i = len(senders_graph_i)
+        n_edge_list.append(num_edges_graph_i)
+
+        receivers_list.append(receivers_graph_i + num_nodes_in_previous_graphs)
+        senders_list.append(senders_graph_i + num_nodes_in_previous_graphs)
+
+        num_nodes_graph_i = len(positions_graph_i)
+        num_nodes_in_previous_graphs += num_nodes_graph_i
+
+    senders = np.concatenate(senders_list, axis=0).astype(np.int32)
+    receivers = np.concatenate(receivers_list, axis=0).astype(np.int32)
+    n_edge = np.stack(n_edge_list).astype(np.int32)
+
+    return senders, receivers, n_edge
+
+
+def compute_connectivity_for_batch_pyfunc(positions, n_node, radius, add_self_edges=True):
+    senders, receivers, n_edge = compute_connectivity_for_batch(positions, n_node, radius, add_self_edges)
+    return senders, receivers, n_edge
+
+
 class HouseGan:
     def __init__(self, FLAGS):
         self.input_size = FLAGS.input_size
@@ -84,7 +133,6 @@ class HouseGan:
         self.train_data = hparams['train_data']
         self.test_data = hparams['test_data']
 
-        self.color_map = ColorPalette()
         self.cross_entropy = tf.keras.losses.BinaryCrossentropy(from_logits=True)
         self.lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
             self.generator_lr,
@@ -96,19 +144,9 @@ class HouseGan:
         self.generator_opt = tf.keras.optimizers.Adam(learning_rate=self.lr_schedule)
         self.discriminator_opt = tf.keras.optimizers.Adam(learning_rate=self.discriminator_lr)
 
-    def base_graph(self, node, purpose):
-        if purpose == 'inputs':
-            nodes = np.zeros([node, self.input_size + self.num_class + self.latent], np.float32)
-            nodes[:, 2+self.num_class:] = np.random.normal(size=(node, self.latent))
-        else:
-            nodes = np.zeros([node, self.input_size + self.output_size + self.num_class], np.float32)
-        edges = np.zeros([np.multiply(self.getCombination(node, 2), 2), 1], np.float32)
-        senders, receivers = [], []
-        nodes_list = np.linspace(0, node-1, node).astype(int)
-        for send in nodes_list:
-            for receive in np.delete(nodes_list, send):
-                senders.append(send)
-                receivers.append(receive)
+    def base_graph(self, node):
+        nodes = np.zeros([node, 3], np.float32)
+        senders, receivers, edges = compute_connectivity_for_batch(positions, n_node, radius, add_self_edges)
         return {
             "globals": [0.],
             "nodes": nodes,
@@ -117,35 +155,10 @@ class HouseGan:
             "senders": senders
         }
 
-    def baseGraphsTf(self, node, purpose):
-        if purpose == 'inputs':
-            nodes = tf.zeros([node, 2 + self.num_class + self.latent], tf.float32)
-            nodes[:, 2 + self.num_class:] = tf.random.normal([node, self.latent])
-        elif purpose == 'target':
-            nodes = tf.zeros([node, 4 + self.num_class])
-        else:
-            nodes = tf.zeros([node, 4 + self.num_class])
-        edges = tf.zeros([tf.multiply(self.getCombination(node, 2), 2), 1], tf.float32)
-        senders, receivers = [], []
-        nodes_list = np.linspace(0, node-1, node).astype(int)
-        for send in nodes_list:
-            for receive in np.delete(nodes_list, send):
-                senders.append(send)
-                receivers.append(receive)
-        return {
-            "globals": [0.],
-            "nodes": nodes,
-            "edges": edges,
-            "receivers": receivers,
-            "senders": senders
-        }
-
-    def graphTuple(self, nodes, purpose):
+    def graphTuple(self, nodes):
         batches_graph = []
         for node in nodes:
-            init = self.baseGraphsNp(len(node), purpose)
-            if not purpose == 'outputs':
-                init['nodes'][:, :node.shape[1]] = node
+            init = self.base_graph(len(node))
             batches_graph.append(init)
         input_tuple = utils_tf.data_dicts_to_graphs_tuple(batches_graph)
         return input_tuple
@@ -223,31 +236,6 @@ class HouseGan:
                                                  tf.split(outputs.nodes, self.batch, axis=1))]
         return loss_ops
 
-    def getBaseImg(self, img_size):
-        r = np.full((*img_size, 1), 255, np.uint8)
-        g = np.full((*img_size, 1), 255, np.uint8)
-        b = np.full((*img_size, 1), 255, np.uint8)
-        return np.concatenate((r, g, b), axis=2)
-
-    def spacePlot(self, batch_input, batch_output, height, width, filename, text=True):
-        img = self.getBaseImg([height, width])
-        i = pd.DataFrame(np.array(batch_input[:, :2]), columns=['h', 'w'])
-        c = pd.DataFrame(tf.argmax(np.array(batch_input[:, 2:12]), axis=1), columns=['c'])
-        o = pd.DataFrame(np.array(batch_output[:, :2]), columns=['x', 'y'])
-        output = pd.concat([o, c, i], axis=1, ignore_index=True)
-        for _, room in output.iterrows():
-            room[0] = 0 if room[0] < 0 else room[0]*width
-            room[1] = 0 if room[1] < 0 else room[1]*height
-            cv2.rectangle(
-                img, (int(room[0]), int(room[1])),
-                (int(room[0]+(room[4]*width)), int(room[1]+(room[3]*height))),
-                self.color_map.indexColor(room[2]), -1)
-            if text:
-                cv2.putText(
-                    img, self.color_map.classToStr(room[2]),
-                    (int(room[0]), int(room[1]) - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, self.color_map.indexColor(room[2]), 2)
-        cv2.imwrite(os.path.join(self.plt_path, filename), img)
 
     def training(self):
         next_batch = load_tfrecord()
