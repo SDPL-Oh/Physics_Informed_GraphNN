@@ -67,39 +67,28 @@ class LearnedSimulator(snt.Module):
             particle_types
     ):
 
-        most_recent_position = position_sequence[:, 0]
-        input_position = position_sequence[:, :1]
-        boundary_sequence, n_bound = self._boundary_sequence(input_position[0, 0, -1])
-        position_boundary = tf.concat([input_position, boundary_sequence], axis=0)
-        n_nodes = n_node + n_bound
-
-        recent_position_boundary = position_boundary[:, -1]
+        # boundary_sequence, n_bound = self._boundary_sequence(position_sequence[0, -1])
+        # position_boundary = tf.concat([position_sequence, boundary_sequence], axis=0)
+        # n_nodes = n_node + n_bound
 
         (senders, receivers, n_edge) = connectivity_utils.compute_connectivity_for_batch_pyfunc(
-            recent_position_boundary, n_nodes, self._connectivity_radius
+            position_sequence, n_node, self._connectivity_radius
         )
 
         node_features = []
-        flat_position_sequence = snt.reshape(input_position, output_shape=(-1,))
+        flat_position_sequence = snt.reshape(position_sequence, output_shape=(-1,))
         node_features.append(flat_position_sequence)
-
-        # todo: boundary sequence 에 particle type 부여 할 것
-        ## particle_types: (678,)
-        ## self._particle_type_embedding: (9, 16)
-        if self._num_particle_types > 1:
-            particle_type_embeddings = tf.nn.embedding_lookup(self._particle_type_embedding, particle_types)
-            node_features.append(particle_type_embeddings)
 
         edge_features = []
 
-        normalized_relative_displacements = (tf.gather(most_recent_position, senders) -
-                                             tf.gather(most_recent_position, receivers)) / self._connectivity_radius
+        normalized_relative_displacements = (tf.gather(position_sequence, senders) -
+                                             tf.gather(position_sequence, receivers)) / self._connectivity_radius
         edge_features.append(normalized_relative_displacements)
 
         normalized_relative_distances = tf.norm(normalized_relative_displacements, axis=-1, keepdims=True)
         edge_features.append(normalized_relative_distances)
 
-        global_context = tf.zeros((tf.shape(n_nodes)[0], 1))
+        global_context = tf.zeros((tf.shape(n_node)[0], 1))
 
         return gn.graphs.GraphsTuple(
             nodes=tf.concat(node_features, axis=-1),
@@ -135,25 +124,28 @@ class LearnedSimulator(snt.Module):
         velocity = next_position - previous_position
         return velocity
 
-    def _boundary_sequence(self, times):
+    def boundary_sequence(self, times):
         const = tf.constant(self._boundaries, dtype=tf.float32)
-        times = tf.linspace(times, times, self.num_boundaries)[:, tf.newaxis, tf.newaxis]
-        x_min_min = tf.linspace(const[0, 0], const[0, 0], self.num_boundaries)[:, tf.newaxis, tf.newaxis]
-        x_max_max = tf.linspace(const[0, 1], const[0, 1], self.num_boundaries)[:, tf.newaxis, tf.newaxis]
-        x_min_max = tf.linspace(const[0, 0], const[0, 1], self.num_boundaries)[:, tf.newaxis, tf.newaxis]
-        y_min_min = tf.linspace(const[1, 0], const[1, 0], self.num_boundaries)[:, tf.newaxis, tf.newaxis]
-        y_max_max = tf.linspace(const[1, 1], const[1, 1], self.num_boundaries)[:, tf.newaxis, tf.newaxis]
-        y_min_max = tf.linspace(const[1, 0], const[1, 1], self.num_boundaries)[:, tf.newaxis, tf.newaxis]
-
+        times = tf.linspace(times, times, self.num_boundaries)[:, tf.newaxis]
+        x_min_min = tf.linspace(const[0, 0], const[0, 0], self.num_boundaries)[:, tf.newaxis]
+        x_max_max = tf.linspace(const[0, 1], const[0, 1], self.num_boundaries)[:, tf.newaxis]
+        x_min_max = tf.linspace(const[0, 0], const[0, 1], self.num_boundaries)[:, tf.newaxis]
+        y_min_min = tf.linspace(const[1, 0], const[1, 0], self.num_boundaries)[:, tf.newaxis]
+        y_max_max = tf.linspace(const[1, 1], const[1, 1], self.num_boundaries)[:, tf.newaxis]
+        y_min_max = tf.linspace(const[1, 0], const[1, 1], self.num_boundaries)[:, tf.newaxis]
         boundaries = tf.concat([
-            tf.concat([x_min_max, y_min_min, times], axis=2),
-            tf.concat([x_min_max, y_max_max, times], axis=2),
-            tf.concat([x_min_min, y_min_max, times], axis=2),
-            tf.concat([x_max_max, y_min_max, times], axis=2)
+            tf.concat([x_min_max, y_min_min, times], axis=1),
+            tf.concat([x_min_max, y_max_max, times], axis=1),
+            tf.concat([x_min_min, y_min_max, times], axis=1),
+            tf.concat([x_max_max, y_min_max, times], axis=1)
         ], axis=0)
 
         n_boundary = boundaries.get_shape().as_list()[0]
         return boundaries, n_boundary
+
+    def boundary_velocity(self):
+        zeros = tf.zeros([self.num_boundaries * 4, 2])
+        return zeros
 
 
 def time_diff(input_sequence):

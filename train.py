@@ -150,7 +150,7 @@ class LearningSimulator:
         self.simulator = self.get_simulator()
 
         self.lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
-            1e-6,
+            1e-8,
             decay_steps=50000,
             decay_rate=0.1,
             staircase=True
@@ -300,22 +300,28 @@ class LearningSimulator:
         rollout_op = self.rollout(features, num_steps=num_steps)
         return rollout_op
 
-    @tf.function
-    def ns_net(self, features):
-        x = features['position'][:, :1, 0:1]
-        y = features['position'][:, :1, 1:2]
-        t = features['position'][:, :1, -1:]
 
-        pos = tf.concat([x, y, t], axis=2)
+
+    @tf.function
+    def ns_net(self, features, labels):
+        bound, n_bound = self.simulator.boundary_sequence(features['position'][0, 0, -1])
+        pos_bound = tf.concat([features['position'][:, 0], bound], axis=0)
+        n_nodes = features['n_particles_per_example'] + n_bound
+
+        x = pos_bound[:, 0:1]
+        y = pos_bound[:, 1:2]
+        t = pos_bound[:, 2:]
+
+        pos_bound = tf.concat([x, y, t], axis=1)
 
         predicted_velocity = self.simulator.get_predicted_velocity(
-            position_sequence=pos,
-            n_particles_per_example=features['n_particles_per_example'],
+            position_sequence=pos_bound,
+            n_particles_per_example=n_nodes,
             particle_types=features['particle_type'][:tf.shape(features['position'])[0]]
-        )
+        )[0]
 
-        phi = predicted_velocity[-1].nodes[:, 0:1][:, tf.newaxis, :]
-        p = predicted_velocity[-1].nodes[:, 1:2][:, tf.newaxis, :]
+        phi = predicted_velocity.nodes[:, :1]
+        p = predicted_velocity.nodes[:, -1:]
         g = tf.Graph()
         with g.as_default():
             u = tf.gradients(phi, y)[0]
@@ -339,25 +345,28 @@ class LearningSimulator:
         f = u_t + u * u_x + v * u_y + p_x - 1 / Re * (u_xx + u_yy)
         g = v_t + u * v_x + v * v_y + p_y - 1 / Re * (v_xx + v_yy)
 
-        return u, v, p, f, g
+        return u, v, p, f, g, phi
 
     @tf.function
     def test_step(self, features, labels):
-        target = labels[:, tf.newaxis, :]
-        target_velocity = target - features['position'][:, :1, :]
+        bound = self.simulator.boundary_velocity()
+        target = tf.subtract(features['position'][:, -1:], features['position'][:, :1])
+        target_velocity = tf.divide(target[:, 0, :-1], target[0, 0, -1])
+        target_bound = tf.concat([target_velocity, bound], axis=0)
 
         with tf.GradientTape() as tape:
-            u, v, p, f, g = self.ns_net(features)
-            loss_u = tf.keras.losses.MSE(target_velocity[:, :, 0:1], u)
-            loss_v = tf.keras.losses.MSE(target_velocity[:, :, 1:2], v)
+            u, v, p, f, g, phi = self.ns_net(features, labels)
+            loss_u = tf.keras.losses.MSE(target_bound[:, 0:1], u)
+            loss_v = tf.keras.losses.MSE(target_bound[:, 1:2], v)
             loss_b = tf.reshape(loss_u + loss_v, [-1])
+            # print(loss_b)
             # loss_c = tf.reshape(f ** 2 + g ** 2, [-1])
             loss = tf.reduce_mean(loss_b)
 
         gradients = tape.gradient(loss, self.simulator.graph_networks.trainable_variables)
         self.opt.apply_gradients(zip(gradients, self.simulator.graph_networks.trainable_variables))
 
-        return loss_b, loss
+        return loss, phi
 
     def validation(self):
         checkpoint = tf.train.Checkpoint(step=tf.Variable(1), module=[self.simulator])
@@ -388,8 +397,8 @@ class LearningSimulator:
         for epoch in range(FLAGS.num_steps):
             print("\nStart of epoch %d" % epoch)
             for step, (features, labels) in enumerate(ds):
-                loss_b, loss = self.test_step(features, labels)
-                print(loss)
+                loss, u = self.test_step(features, labels)
+                print(u)
 
 
 def main(_):

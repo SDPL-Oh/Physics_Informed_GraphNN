@@ -51,10 +51,6 @@ def parse_serialized_simulation_example(example_proto, metadata):
     position_shape = [metadata['sequence_length'] + 1, -1, metadata['dim']]
     parsed_features['position'] = tf.reshape(parsed_features['position'], position_shape)
 
-    # time_sequence = tf.range(metadata['sequence_length'] + 1, dtype=tf.float32)
-    # parsed_features['time'] = tf.reshape(time_sequence, [metadata['sequence_length'] + 1, -1, metadata['dim']])
-    # print(parsed_features['time'])
-
     context['particle_type'] = tf.py_function(
         functools.partial(convert_to_tensor, encoded_dtype=np.int64),
         inp=[context['particle_type'].values],
